@@ -14,4 +14,4 @@ chat server:
 this assumes quite a few local dependancies that must be filled for this to work for now
 
 `npm i --global typescript@next`
-`cd .. && git clone \<libp2p-rust\>
+`cd .. && git clone \<libp2p-rust\>`
