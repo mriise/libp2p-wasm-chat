@@ -64,8 +64,10 @@ pub fn start() {
     // add peer channel to user input
     let peer_consumer = attach_add_peer();
 
+    let message_consumer = attach_add_message_box();
+
     // kickoff async
-    start_chat(peer_consumer);
+    start_chat(peer_consumer, message_consumer);
 }
 
 fn count_to_60() {
@@ -129,6 +131,48 @@ fn attach_add_peer() -> UnboundedReceiver<Multiaddr> {
     peer_consumer
 }
 
+fn attach_add_message_box() -> UnboundedReceiver<String> {
+    let window = web_sys::window().expect("no global `window` exists");
+    let document = window.document().expect("should have a document on window");
+    let body = document.body().expect("document should have a body");
+
+    let input = document
+        .get_element_by_id("message")
+        .expect("message input should be defined")
+        .dyn_into::<HtmlFormElement>()
+        .expect("elemnt is a form");
+
+    // channel split
+    let (mut message_producer, message_consumer) = mpsc::unbounded();
+
+    // move producer into closure of input
+    let closure = Closure::wrap(Box::new(move |e: Event| {
+        //absoulte unit of a call chain
+        let input = e
+            .current_target()
+            .unwrap()
+            .dyn_into::<web_sys::HtmlFormElement>()
+            .unwrap()
+            .get_with_index(0)
+            .unwrap()
+            .dyn_into::<web_sys::HtmlInputElement>()
+            .unwrap();
+        log!(format_args!("user input, send message: {:?}", input.value()).to_string());
+        
+        message_producer.unbounded_send(input.value()).unwrap_throw();
+
+        input.set_value(""); 
+        e.prevent_default();
+        
+    }) as Box<dyn FnMut(_)>);
+
+
+    input.set_onsubmit(Some(&closure.as_ref().unchecked_ref()));
+    closure.forget();
+
+    message_consumer
+}
+
 fn add_peer(multiaddr: JsValue) -> Result<(), String> {
     if let Some(str) = multiaddr.as_string() {
         if let Ok(multiaddr) = str.parse::<Multiaddr>() {
@@ -141,7 +185,7 @@ fn add_peer(multiaddr: JsValue) -> Result<(), String> {
     }
 }
 
-fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>) {
+fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consumer: UnboundedReceiver<String>) {
     spawn_local(async move {
         // Create a random PeerId
         let local_key = identity::Keypair::generate_ed25519();
@@ -201,7 +245,7 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>) {
                 identify
             };
             
-            behaviour.floodsub.subscribe(topic);
+            behaviour.floodsub.subscribe(topic.clone());
             behaviour
         };
 
@@ -252,6 +296,7 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>) {
                         .behaviour_mut()
                         .floodsub
                         .add_node_to_partial_view(peer_id);
+                        log!(format_args!("Connected to {:?}", peer_id).to_string());
                     },
                     e => { log!(format_args!("{:?}", e).to_string())}
                 },
@@ -260,6 +305,9 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>) {
                         Err(e) => log!(format_args!("dial error {:?}", e).to_string()),
                         _ => ()
                     }
+                },
+                message = message_consumer.select_next_some() => {
+                    swarm.behaviour_mut().floodsub.publish(topic.clone(), message);
                 },
             }
             
