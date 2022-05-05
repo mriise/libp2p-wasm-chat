@@ -47,9 +47,6 @@ use libp2p::{
     Multiaddr, NetworkBehaviour, PeerId, Swarm,
 };
 
-// testing issues with gossipsub
-use libp2p::gossipsub::*;
-
 // use libp2p_webrtc::WebRtcTransport;
 
 // #[cfg(not(target_arch = "wasm32"))]

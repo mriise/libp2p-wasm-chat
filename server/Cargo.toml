@@ -1,0 +1,13 @@
+[package]
+name = "rusty-gossip-pad-server"
+version = "0.1.0"
+authors = ["mriise <me@mriise.net>"]
+edition = "2021"
+
+# [[bin]]
+# name = "rusty-gossip-pad-server"
+
+[dependencies]
+libp2p = { version = "*", path = "../../rust-libp2p", features = ["mplex", "noise", "identify", "yamux", "ping", "floodsub"] }
+async-std = { version = "1.11.0", features = ["attributes"] }
+futures = "*"
