@@ -1,0 +1,1 @@
+wasm-pack build --out-name index --target web && tsc --project tsconfig.json && cp ./static/index.html ./dist && cp ./pkg/*.wasm ./dist/pkg
