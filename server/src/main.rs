@@ -56,6 +56,7 @@ use futures::{
 };
 use libp2p::{
     floodsub::{self, Floodsub, FloodsubEvent},
+    gossipsub::{self, Gossipsub, GossipsubEvent, protocol::GossipsubCodec, GossipsubConfig, TopicScoreParams, PeerScoreParams, PeerScoreThresholds, Sha256Topic},
     ping::{self, Ping, PingEvent},
     identity,
     mdns::{Mdns, MdnsConfig, MdnsEvent},
@@ -77,6 +78,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Create a Floodsub topic
     let floodsub_topic = floodsub::Topic::new("chat");
+    let gossipsub_topic = Sha256Topic::new("gossip-chat");
+    
 
     // We create a custom network behaviour that combines floodsub and mDNS.
     // In the future, we want to improve libp2p to make this easier to do.
@@ -86,17 +89,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     #[behaviour(out_event = "OutEvent")]
     struct MyBehaviour {
         floodsub: Floodsub,
+        gossipsub: Gossipsub,
         ping: Ping,
-
-        // Struct fields which do not implement NetworkBehaviour need to be ignored
-        #[behaviour(ignore)]
-        #[allow(dead_code)]
-        ignored_member: bool,
     }
 
     #[derive(Debug)]
     enum OutEvent {
         Floodsub(FloodsubEvent),
+        Gossipsub(GossipsubEvent),
         Ping(PingEvent),
     }
 
@@ -112,15 +112,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    impl From<GossipsubEvent> for OutEvent {
+        fn from(v: GossipsubEvent) -> Self {
+            Self::Gossipsub(v)
+        }
+    }
+
     // Create a Swarm to manage peers and events
     let mut swarm = {
         // let mdns = task::block_on(Mdns::new(MdnsConfig::default()))?;
 
         let ping = Ping::new(ping::Config::new().with_keep_alive(true));
+
+
+        let cfg = GossipsubConfig::default();
+        let mut gossipsub = Gossipsub::new(gossipsub::MessageAuthenticity::Anonymous, cfg).unwrap();
+        // gossipsub.set_topic_params(gossipsub_topic, TopicScoreParams::default());
+        // gossipsub.with_peer_score(PeerScoreParams::default(), PeerScoreThresholds::default());
+        gossipsub.subscribe(&gossipsub_topic).unwrap();
+        
+
         let mut behaviour = MyBehaviour {
             floodsub: Floodsub::new(local_peer_id),
+            gossipsub,
             ping,
-            ignored_member: false,
         };
 
         behaviour.floodsub.subscribe(floodsub_topic.clone());
@@ -153,6 +168,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 SwarmEvent::Behaviour(OutEvent::Floodsub(
                     FloodsubEvent::Message(message)
+                )) => {
+                    println!(
+                        "Received: '{:?}' from {:?}",
+                        String::from_utf8_lossy(&message.data),
+                        message.source
+                    );
+                },
+                SwarmEvent::Behaviour(OutEvent::Gossipsub(
+                    GossipsubEvent::Message { propagation_source, message_id, message }
                 )) => {
                     println!(
                         "Received: '{:?}' from {:?}",

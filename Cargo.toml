@@ -27,10 +27,10 @@ futures = "0.3.21"
 futures-util = "0.3.21"
 
 
-libp2p = { version = "*", path = "../rust-libp2p", default-features = false, features = ["wasm-bindgen", "mplex", "noise", "identify", "yamux", "ping", "floodsub", "wasm-ext", "wasm-ext-websocket"] }
+libp2p = { version = "0.46.1", default-features = false, features = ["wasm-bindgen", "mplex", "noise", "identify", "yamux", "ping", "floodsub", "wasm-ext", "wasm-ext-websocket", "gossipsub"] }
 # libp2p-webrtc = { version = "0.3.0", path = "../libp2p-webrtc/libp2p-webrtc" }
 # libp2p gossipsub is restricted under the unknonwn OS flag, so it must be imported directly, wasmtimer instant is also broken so direct from local
-# libp2p-gossipsub = {version = "0.38.0", path = "../rust-libp2p/protocols/gossipsub" }
+# libp2p-gossipsub = {version = "0.40.0", path = "../rust-libp2p/protocols/gossipsub" }
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires
@@ -43,7 +43,8 @@ console_error_panic_hook = { version = "0.1.7", optional = true }
 # allocator, however.
 #
 # Unfortunately, `wee_alloc` requires nightly Rust when targeting wasm for now.
-wee_alloc = { version = "0.4.5", optional = true }
+# wee_alloc = { version = "0.4.5", optional = true }
+rlsf = "0.1.2"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.30"

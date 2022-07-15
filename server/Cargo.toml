@@ -8,6 +8,6 @@ edition = "2021"
 # name = "rusty-gossip-pad-server"
 
 [dependencies]
-libp2p = { version = "*", path = "../../rust-libp2p", features = ["mplex", "noise", "identify", "yamux", "ping", "floodsub"] }
+libp2p = { version = "0.46.1", features = ["mplex", "noise", "identify", "yamux", "ping", "floodsub", "gossipsub"] }
 async-std = { version = "1.11.0", features = ["attributes"] }
 futures = "*"

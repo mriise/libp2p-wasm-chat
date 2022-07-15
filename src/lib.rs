@@ -1,14 +1,19 @@
-mod utils;
-mod chat;
+// rlsf is for single threaded, atomics in wasm usually mean multithreading
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+#[global_allocator]
+static A: rlsf::SmallGlobalTlsf = rlsf::SmallGlobalTlsf::INIT;
 
-use futures::channel::mpsc::{self, Receiver, UnboundedReceiver};
-use ::futures::{executor, StreamExt, *};
-use futures_util::future::{select, Either};
-use js_sys::Array;
-use libp2p::core::transport::OrTransport;
-use libp2p::identify::{Identify, IdentifyEvent, IdentifyConfig};
+extern crate alloc;
+use alloc::vec::Vec;
+
+mod chat;
+mod utils;
+
+use alloc::string::String;
+use ::futures::{StreamExt, *};
+use futures::channel::mpsc::{self, UnboundedReceiver};
+use libp2p::identify::{Identify, IdentifyConfig, IdentifyEvent};
 use libp2p::ping::Ping;
-use libp2p::swarm::dial_opts::DialOpts;
 use libp2p::wasm_ext::ExtTransport;
 use libp2p::Transport;
 use utils::set_panic_hook;
@@ -23,23 +28,22 @@ pub use libp2p::wasm_ext::ffi::{Connection, ConnectionEvent, ListenEvent};
 use web_sys::{Event, HtmlFormElement};
 
 use ::core::time::Duration;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use gloo::{
-    console::{console, log},
     file::BlobContents,
     timers::{
         callback::{Interval, Timeout},
         future::{IntervalStream, TimeoutFuture},
     },
 };
-use std::borrow::BorrowMut;
+use ::core::borrow::BorrowMut;
+// use alloc::collections::hash_map::DefaultHasher;
+use ::core::hash::{Hash, Hasher};
+use alloc::boxed::Box;
 
 use libp2p::{
     core::{self, transport, upgrade::Version::V1Lazy},
-    identity,
-    identify,
-    floodsub::{self, Topic, Floodsub, FloodsubEvent},
+    floodsub::{self, Floodsub, FloodsubEvent, Topic},
+    identify, identity,
     noise::{self, NoiseConfig, X25519Spec},
     ping::{self, PingEvent},
     swarm::{AddressScore, SwarmEvent},
@@ -47,12 +51,19 @@ use libp2p::{
     Multiaddr, NetworkBehaviour, PeerId, Swarm,
 };
 
+use libp2p_gossipsub::{self, Gossipsub, GossipsubEvent, protocol::GossipsubCodec, GossipsubConfig, TopicScoreParams, PeerScoreParams, PeerScoreThresholds, Sha256Topic};
+
 // use libp2p_webrtc::WebRtcTransport;
 
 // #[cfg(not(target_arch = "wasm32"))]
 // compile_error("not building wasm!");
 // static PEER_CHANNEL: (mpsc::Sender<Multiaddr>, Receiver<Multiaddr>) = mpsc::channel(1);
 
+macro_rules! log {
+    ($($arg:expr),+) => {
+       gloo::console::externs::log(::alloc::boxed::Box::from([$(gloo::console::__macro::JsValue::from($arg),)+]));
+    }
+}
 
 #[wasm_bindgen(start)]
 #[allow(unused_variables)]
@@ -68,23 +79,6 @@ pub fn start() {
 
     // kickoff async
     start_chat(peer_consumer, message_consumer);
-}
-
-fn count_to_60() {
-    spawn_local(async {
-        let mut count = 0;
-
-        let time = Duration::new(1, 0);
-        let mut timer = IntervalStream::new(time.as_millis() as u32);
-
-        // let a = TimeoutFuture::new();
-
-        while count < 60 {
-            timer.next().await;
-            log!("hello !!!! 1");
-            count += 1;
-        }
-    });
 }
 
 fn attach_add_peer() -> UnboundedReceiver<Multiaddr> {
@@ -114,16 +108,14 @@ fn attach_add_peer() -> UnboundedReceiver<Multiaddr> {
             .dyn_into::<web_sys::HtmlInputElement>()
             .unwrap();
         log!(format_args!("user input, add peer: {:?}", input.value()).to_string());
-        
+
         if let Ok(multiaddr) = input.value().parse::<Multiaddr>() {
             peer_producer.unbounded_send(multiaddr).unwrap_throw(); // does this need to be polled?
         } else {
             log!("input peer is invalid or unsupported")
         }
         e.prevent_default();
-        
     }) as Box<dyn FnMut(_)>);
-
 
     input.set_onsubmit(Some(&closure.as_ref().unchecked_ref()));
     closure.forget();
@@ -158,14 +150,14 @@ fn attach_add_message_box() -> UnboundedReceiver<String> {
             .dyn_into::<web_sys::HtmlInputElement>()
             .unwrap();
         log!(format_args!("user input, send message: {:?}", input.value()).to_string());
-        
-        message_producer.unbounded_send(input.value()).unwrap_throw();
 
-        input.set_value(""); 
+        message_producer
+            .unbounded_send(input.value())
+            .unwrap_throw();
+
+        input.set_value("");
         e.prevent_default();
-        
     }) as Box<dyn FnMut(_)>);
-
 
     input.set_onsubmit(Some(&closure.as_ref().unchecked_ref()));
     closure.forget();
@@ -185,7 +177,10 @@ fn add_peer(multiaddr: JsValue) -> Result<(), String> {
     }
 }
 
-fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consumer: UnboundedReceiver<String>) {
+fn start_chat(
+    mut peer_consumer: UnboundedReceiver<Multiaddr>,
+    mut message_consumer: UnboundedReceiver<String>,
+) {
     spawn_local(async move {
         // Create a random PeerId
         let local_key = identity::Keypair::generate_ed25519();
@@ -193,6 +188,7 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consu
         log!(format_args!("Local peer id: {:?}", local_peer_id).to_string());
 
         let topic = Topic::new("chat");
+        let gossipsub_topic = Sha256Topic::new("gossip-chat");
 
         //transport
         // let webrtc = WebRtcTransport::new(local_peer_id, vec!["stun:stun.l.google.com:19302"]);
@@ -208,12 +204,14 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consu
         #[behaviour(out_event = "OutEvent")]
         struct DevBrowserBehavior {
             floodsub: Floodsub,
+            gossipsub: Gossipsub,
             ping: Ping, // ping is used to force keepalive during development
             identify: Identify,
         }
         #[derive(Debug)]
         enum OutEvent {
             Floodsub(FloodsubEvent),
+            Gossipsub(GossipsubEvent),
             Ping(PingEvent),
             Identify(IdentifyEvent),
         }
@@ -227,6 +225,11 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consu
                 Self::Floodsub(v)
             }
         }
+        impl From<GossipsubEvent> for OutEvent {
+            fn from(v: GossipsubEvent) -> Self {
+                Self::Gossipsub(v)
+            }
+        }
         impl From<IdentifyEvent> for OutEvent {
             fn from(v: IdentifyEvent) -> Self {
                 Self::Identify(v)
@@ -237,15 +240,24 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consu
         let behaviour: DevBrowserBehavior = {
             let floodsub = Floodsub::new(local_peer_id);
             let ping = Ping::new(ping::Config::new().with_keep_alive(true));
-            let identify = Identify::new(IdentifyConfig::new("1.0.0".to_string(), local_key.public()));
+            let identify =
+                Identify::new(IdentifyConfig::new("1.0.0".to_string(), local_key.public()));
+
+            let cfg = GossipsubConfig::default();
+            let gossipsub = Gossipsub::new(gossipsub::MessageAuthenticity::Anonymous, cfg).unwrap();
+        
+
             // subscribes to our topic
             let mut behaviour = DevBrowserBehavior {
                 floodsub,
+                gossipsub,
                 ping,
-                identify
+                identify,
             };
-            
+
             behaviour.floodsub.subscribe(topic.clone());
+            behaviour.gossipsub.subscribe(&gossipsub_topic).unwrap();
+
             behaviour
         };
 
@@ -276,6 +288,14 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consu
                             message.source
                         ).to_string()),
 
+                        OutEvent::Gossipsub(
+                            GossipsubEvent::Message{message, ..}
+                        ) => log!(format_args!(
+                            "Received: '{:?}' from {:?}",
+                            String::from_utf8_lossy(&message.data),
+                            message.source
+                        ).to_string()),
+
                         // etc events
                         OutEvent::Floodsub(e) => { log!(format_args!("Floodsub event: {:?}", e).to_string())},
                         e => ()//{ log!(format_args!("Ping event: {:?}", e).to_string())} // print ping events
@@ -290,7 +310,7 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consu
                     .to_string()),
                     SwarmEvent::Dialing(peer_id) => log!(format_args!("dialing {:?}", peer_id).to_string()),
 
-                    //add all new peers to floodsub 
+                    //add all new peers to floodsub
                     SwarmEvent::ConnectionEstablished{peer_id, ..} => {
                         swarm
                         .behaviour_mut()
@@ -310,7 +330,6 @@ fn start_chat(mut peer_consumer: UnboundedReceiver<Multiaddr>, mut message_consu
                     swarm.behaviour_mut().floodsub.publish(topic.clone(), message);
                 },
             }
-            
         }
     })
 }
