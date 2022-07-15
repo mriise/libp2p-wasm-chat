@@ -56,14 +56,15 @@ use futures::{
 };
 use libp2p::{
     floodsub::{self, Floodsub, FloodsubEvent},
-    gossipsub::{self, Gossipsub, GossipsubEvent, protocol::GossipsubCodec, GossipsubConfig, TopicScoreParams, PeerScoreParams, PeerScoreThresholds, Sha256Topic},
+    gossipsub::{self, Gossipsub, GossipsubEvent, protocol::GossipsubCodec, GossipsubConfig, TopicScoreParams, PeerScoreParams, PeerScoreThresholds, Sha256Topic, ValidationMode},
     ping::{self, Ping, PingEvent},
-    identity,
+    identity::{self, Keypair},
     mdns::{Mdns, MdnsConfig, MdnsEvent},
     swarm::SwarmEvent,
-    Multiaddr, NetworkBehaviour, PeerId, Swarm,
+    Multiaddr, NetworkBehaviour, PeerId, Swarm, identify::{IdentifyEvent, Identify, IdentifyConfig}, websocket, dns, tcp, Transport, noise::{NoiseConfig, self}, yamux::YamuxConfig, core::upgrade,
 };
 use std::error::Error;
+use core::time::Duration;
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -72,8 +73,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_peer_id = PeerId::from(local_key.public());
     println!("Local peer id: {:?}", local_peer_id);
 
-    // Set up an encrypted DNS-enabled TCP Transport over the Mplex and Yamux protocols
-    let transport = libp2p::development_transport(local_key).await?;
+
+    let noise = noise::Keypair::<noise::X25519Spec>::new()
+            .into_authentic(&local_key)
+            .unwrap();
+    let base = websocket::WsConfig::new(
+        dns::DnsConfig::system(tcp::TcpTransport::new(
+            tcp::GenTcpConfig::new().nodelay(true),
+        ))
+        .await?,
+    ).boxed();
+    let transport = base
+            .upgrade(upgrade::Version::V1Lazy)
+            .authenticate(NoiseConfig::xx(noise).into_authenticated())
+            .multiplex(YamuxConfig::default())
+            .timeout(Duration::from_secs(10))
+            .boxed();
+    // let transport = libp2p::development_transport(local_key.clone()).await?;
 
 
     // Create a Floodsub topic
@@ -91,6 +107,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         floodsub: Floodsub,
         gossipsub: Gossipsub,
         ping: Ping,
+        // identify: Identify,
+
     }
 
     #[derive(Debug)]
@@ -98,6 +116,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Floodsub(FloodsubEvent),
         Gossipsub(GossipsubEvent),
         Ping(PingEvent),
+        // Identify(IdentifyEvent),
+
     }
 
     impl From<PingEvent> for OutEvent {
@@ -111,22 +131,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Self::Floodsub(v)
         }
     }
-
     impl From<GossipsubEvent> for OutEvent {
         fn from(v: GossipsubEvent) -> Self {
             Self::Gossipsub(v)
         }
     }
+    // impl From<IdentifyEvent> for OutEvent {
+    //     fn from(v: IdentifyEvent) -> Self {
+    //         Self::Identify(v)
+    //     }
+    // }
 
     // Create a Swarm to manage peers and events
     let mut swarm = {
         // let mdns = task::block_on(Mdns::new(MdnsConfig::default()))?;
+        let identify =
+        Identify::new(IdentifyConfig::new("1.0.0".to_string(), local_key.public()));
 
         let ping = Ping::new(ping::Config::new().with_keep_alive(true));
 
 
-        let cfg = GossipsubConfig::default();
-        let mut gossipsub = Gossipsub::new(gossipsub::MessageAuthenticity::Anonymous, cfg).unwrap();
+        let cfg = gossipsub::GossipsubConfigBuilder::default()
+            .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+            .validation_mode(ValidationMode::Permissive) // This sets the kind of message validation. The default is Strict (enforce message signing)
+            // same content will be propagated.
+            .build()
+            .expect("Valid config");  
+        let mut gossipsub = Gossipsub::new(gossipsub::MessageAuthenticity::Signed(local_key), cfg).unwrap();
         // gossipsub.set_topic_params(gossipsub_topic, TopicScoreParams::default());
         // gossipsub.with_peer_score(PeerScoreParams::default(), PeerScoreThresholds::default());
         gossipsub.subscribe(&gossipsub_topic).unwrap();
@@ -135,6 +166,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let mut behaviour = MyBehaviour {
             floodsub: Floodsub::new(local_peer_id),
             gossipsub,
+            // identify,
             ping,
         };
 
@@ -158,28 +190,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Kick it off
     loop {
         select! {
-            line = stdin.select_next_some() => swarm
-                .behaviour_mut()
-                .floodsub
-                .publish(floodsub_topic.clone(), line.expect("Stdin not to close").as_bytes()),
+            line = stdin.select_next_some() => {
+                let line = line.expect("Stdin not to close");
+                let b = swarm
+                .behaviour_mut();
+                b.floodsub
+                .publish(floodsub_topic.clone(), line.as_bytes());
+                b.gossipsub.publish(gossipsub_topic.clone(), line);
+            },
             event = swarm.select_next_some() => match event {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Listening on {:?}", address);
                 }
-                SwarmEvent::Behaviour(OutEvent::Floodsub(
-                    FloodsubEvent::Message(message)
-                )) => {
-                    println!(
-                        "Received: '{:?}' from {:?}",
-                        String::from_utf8_lossy(&message.data),
-                        message.source
-                    );
-                },
+                // SwarmEvent::Behaviour(OutEvent::Floodsub(
+                //     FloodsubEvent::Message(message)
+                // )) => {
+                //     println!(
+                //         "Received flood: '{:?}' from {:?}",
+                //         String::from_utf8_lossy(&message.data),
+                //         message.source
+                //     );
+                // },
                 SwarmEvent::Behaviour(OutEvent::Gossipsub(
-                    GossipsubEvent::Message { propagation_source, message_id, message }
+                    GossipsubEvent::Message { message, .. }
                 )) => {
                     println!(
-                        "Received: '{:?}' from {:?}",
+                        "Received gossip: '{:?}' from {:?}",
                         String::from_utf8_lossy(&message.data),
                         message.source
                     );
@@ -187,8 +223,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 SwarmEvent::ConnectionEstablished{peer_id, ..} => {
                     swarm.behaviour_mut().floodsub.add_node_to_partial_view(peer_id);
+                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+
                 }
-                _ => {}
+                e => ()//{println!("event {e:?}")}
             }
         }
     }

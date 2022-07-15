@@ -27,7 +27,7 @@ futures = "0.3.21"
 futures-util = "0.3.21"
 
 
-libp2p = { version = "0.46.1", default-features = false, features = ["wasm-bindgen", "mplex", "noise", "identify", "yamux", "ping", "floodsub", "wasm-ext", "wasm-ext-websocket", "gossipsub"] }
+libp2p = { path = "../rust-libp2p", version = "0.47.0", default-features = false, features = ["wasm-bindgen", "mplex", "noise", "identify", "yamux", "ping", "floodsub", "wasm-ext", "wasm-ext-websocket", "gossipsub"] }
 # libp2p-webrtc = { version = "0.3.0", path = "../libp2p-webrtc/libp2p-webrtc" }
 # libp2p gossipsub is restricted under the unknonwn OS flag, so it must be imported directly, wasmtimer instant is also broken so direct from local
 # libp2p-gossipsub = {version = "0.40.0", path = "../rust-libp2p/protocols/gossipsub" }

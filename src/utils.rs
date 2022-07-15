@@ -16,7 +16,7 @@ pub fn set_panic_hook() {
 
 macro_rules! info {
     ($($arg:expr),+) => {
-       gloo::console::externs::info(::alloc::boxed::Box::from([$(gloo::console::__macro::JsValue::from($arg),)+]));
+       gloo::console::externs::info(::alloc::boxed::Box::from([$(gloo::console::__macro::JsValue::from($arg),)+]))
     }
 }
 

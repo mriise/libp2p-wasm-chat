@@ -12,6 +12,7 @@ mod utils;
 use alloc::string::String;
 use ::futures::{StreamExt, *};
 use futures::channel::mpsc::{self, UnboundedReceiver};
+use libp2p::gossipsub::ValidationMode;
 use libp2p::identify::{Identify, IdentifyConfig, IdentifyEvent};
 use libp2p::ping::Ping;
 use libp2p::wasm_ext::ExtTransport;
@@ -44,6 +45,7 @@ use libp2p::{
     core::{self, transport, upgrade::Version::V1Lazy},
     floodsub::{self, Floodsub, FloodsubEvent, Topic},
     identify, identity,
+    gossipsub::{self, Gossipsub, GossipsubEvent, protocol::GossipsubCodec, GossipsubConfig, TopicScoreParams, PeerScoreParams, PeerScoreThresholds, Sha256Topic},
     noise::{self, NoiseConfig, X25519Spec},
     ping::{self, PingEvent},
     swarm::{AddressScore, SwarmEvent},
@@ -51,7 +53,6 @@ use libp2p::{
     Multiaddr, NetworkBehaviour, PeerId, Swarm,
 };
 
-use libp2p_gossipsub::{self, Gossipsub, GossipsubEvent, protocol::GossipsubCodec, GossipsubConfig, TopicScoreParams, PeerScoreParams, PeerScoreThresholds, Sha256Topic};
 
 // use libp2p_webrtc::WebRtcTransport;
 
@@ -61,7 +62,7 @@ use libp2p_gossipsub::{self, Gossipsub, GossipsubEvent, protocol::GossipsubCodec
 
 macro_rules! log {
     ($($arg:expr),+) => {
-       gloo::console::externs::log(::alloc::boxed::Box::from([$(gloo::console::__macro::JsValue::from($arg),)+]));
+       gloo::console::externs::log(::alloc::boxed::Box::from([$(gloo::console::__macro::JsValue::from($arg),)+]))
     }
 }
 
@@ -206,14 +207,14 @@ fn start_chat(
             floodsub: Floodsub,
             gossipsub: Gossipsub,
             ping: Ping, // ping is used to force keepalive during development
-            identify: Identify,
+            // identify: Identify,
         }
         #[derive(Debug)]
         enum OutEvent {
             Floodsub(FloodsubEvent),
             Gossipsub(GossipsubEvent),
             Ping(PingEvent),
-            Identify(IdentifyEvent),
+            // Identify(IdentifyEvent),
         }
         impl From<PingEvent> for OutEvent {
             fn from(v: PingEvent) -> Self {
@@ -230,11 +231,11 @@ fn start_chat(
                 Self::Gossipsub(v)
             }
         }
-        impl From<IdentifyEvent> for OutEvent {
-            fn from(v: IdentifyEvent) -> Self {
-                Self::Identify(v)
-            }
-        }
+        // impl From<IdentifyEvent> for OutEvent {
+        //     fn from(v: IdentifyEvent) -> Self {
+        //         Self::Identify(v)
+        //     }
+        // }
 
         // let behaviour = ping::Behaviour::new(ping::Config::new().with_keep_alive(true));
         let behaviour: DevBrowserBehavior = {
@@ -243,8 +244,13 @@ fn start_chat(
             let identify =
                 Identify::new(IdentifyConfig::new("1.0.0".to_string(), local_key.public()));
 
-            let cfg = GossipsubConfig::default();
-            let gossipsub = Gossipsub::new(gossipsub::MessageAuthenticity::Anonymous, cfg).unwrap();
+            let cfg = gossipsub::GossipsubConfigBuilder::default()
+                .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+                .validation_mode(ValidationMode::Permissive) // This sets the kind of message validation. The default is Strict (enforce message signing)
+                // same content will be propagated.
+                .build()
+                .expect("Valid config");
+            let gossipsub = Gossipsub::new(gossipsub::MessageAuthenticity::Signed(local_key), cfg).unwrap();
         
 
             // subscribes to our topic
@@ -252,7 +258,7 @@ fn start_chat(
                 floodsub,
                 gossipsub,
                 ping,
-                identify,
+                // identify,
             };
 
             behaviour.floodsub.subscribe(topic.clone());
@@ -280,24 +286,26 @@ fn start_chat(
                     SwarmEvent::Behaviour(event) => match event {
 
                         // messages!
-                        OutEvent::Floodsub(
-                            FloodsubEvent::Message(message)
-                        ) => log!(format_args!(
-                            "Received: '{:?}' from {:?}",
-                            String::from_utf8_lossy(&message.data),
-                            message.source
-                        ).to_string()),
+                        // OutEvent::Floodsub(
+                        //     FloodsubEvent::Message(message)
+                        // ) => log!(format_args!(
+                        //     "Received: '{:?}' from {:?}",
+                        //     String::from_utf8_lossy(&message.data),
+                        //     message.source
+                        // ).to_string()),
 
                         OutEvent::Gossipsub(
                             GossipsubEvent::Message{message, ..}
                         ) => log!(format_args!(
-                            "Received: '{:?}' from {:?}",
+                            "Received Gossip: '{:?}' from {:?}",
                             String::from_utf8_lossy(&message.data),
                             message.source
                         ).to_string()),
 
                         // etc events
-                        OutEvent::Floodsub(e) => { log!(format_args!("Floodsub event: {:?}", e).to_string())},
+                        OutEvent::Floodsub(e) => (),//{ log!(format_args!("Floodsub event: {:?}", e).to_string())},
+                        OutEvent::Gossipsub(e) => { log!(format_args!("Gossipsub event: {:?}", e).to_string())},
+
                         e => ()//{ log!(format_args!("Ping event: {:?}", e).to_string())} // print ping events
                     },
                     SwarmEvent::IncomingConnection {
@@ -312,13 +320,14 @@ fn start_chat(
 
                     //add all new peers to floodsub
                     SwarmEvent::ConnectionEstablished{peer_id, ..} => {
-                        swarm
-                        .behaviour_mut()
-                        .floodsub
+                        let b = swarm
+                        .behaviour_mut();
+                        b.floodsub
                         .add_node_to_partial_view(peer_id);
+                        b.gossipsub.add_explicit_peer(&peer_id);
                         log!(format_args!("Connected to {:?}", peer_id).to_string());
                     },
-                    e => { log!(format_args!("{:?}", e).to_string())}
+                    e => ()//{ log!(format_args!("{:?}", e).to_string())}
                 },
                 peer_multiaddr = peer_consumer.select_next_some() => {
                     match swarm.dial(peer_multiaddr) {
@@ -327,7 +336,9 @@ fn start_chat(
                     }
                 },
                 message = message_consumer.select_next_some() => {
-                    swarm.behaviour_mut().floodsub.publish(topic.clone(), message);
+                    swarm.behaviour_mut().floodsub.publish(topic.clone(), message.clone());
+                    swarm.behaviour_mut().gossipsub.publish(gossipsub_topic.clone(), message);
+
                 },
             }
         }
